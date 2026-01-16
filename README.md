@@ -16,7 +16,8 @@ A cross-platform desktop application for speed reading using the **Rapid Serial 
 - **Modern UI**: Clean, minimalistic design with the Fusion theme
 
 ## Installation
-In the /dist folder, you are able to directly download an executable if you'd like, courtesy of pyinstaller
+
+An executable of an older version is available in the /dist directory. Not recommended, as it is not as feature-rich.
 
 If it doesn't happen to be working you can run it like any other python program
 
