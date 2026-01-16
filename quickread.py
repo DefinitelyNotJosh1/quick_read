@@ -15,8 +15,8 @@ from PyQt6.QtWidgets import (
     QFileDialog, QProgressBar, QStackedWidget, QFrame, QMessageBox,
     QSizePolicy, QSpacerItem, QGraphicsDropShadowEffect, QGridLayout
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPropertyAnimation, QEasingCurve, QSize
-from PyQt6.QtGui import QFont, QFontDatabase, QKeySequence, QShortcut, QAction, QColor, QFontMetrics
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPropertyAnimation, QEasingCurve, QSize, QRect
+from PyQt6.QtGui import QFont, QFontDatabase, QKeySequence, QShortcut, QAction, QColor, QFontMetrics, QPainter, QBrush, QPen, QLinearGradient, QMouseEvent
 
 
 # =============================================================================
@@ -258,20 +258,6 @@ QComboBox QAbstractItemView {
     selection-color: #1a1a2e;
 }
 
-QProgressBar {
-    border: none;
-    border-radius: 6px;
-    background-color: #2a2a4a;
-    height: 12px;
-    text-align: center;
-}
-
-QProgressBar::chunk {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                stop:0 #00d9ff, stop:0.5 #00e676, stop:1 #00d9ff);
-    border-radius: 6px;
-}
-
 QFrame#displayFrame {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                                 stop:0 #1e1e35, stop:1 #12122a);
@@ -325,6 +311,145 @@ QFrame#orpContainer {
     background: transparent;
 }
 """
+
+
+# =============================================================================
+# Custom Seekable Progress Bar Widget
+# =============================================================================
+
+class SeekableProgressBar(QWidget):
+    """
+    A YouTube-style progress bar that can be clicked and dragged to seek.
+    Emits seeked signal with position as float (0.0 to 1.0).
+    """
+    
+    seeked = pyqtSignal(float)  # Emits position 0.0-1.0 when user seeks
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._progress = 0.0  # 0.0 to 1.0
+        self._is_dragging = False
+        self._hover = False
+        self._hover_pos = 0.0
+        
+        self.setMinimumHeight(20)
+        self.setMaximumHeight(30)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMouseTracking(True)
+    
+    def set_progress(self, value: float):
+        """Set progress value (0.0 to 1.0)."""
+        self._progress = max(0.0, min(1.0, value))
+        self.update()
+    
+    def get_progress(self) -> float:
+        """Get current progress value."""
+        return self._progress
+    
+    def _pos_to_progress(self, x: int) -> float:
+        """Convert x coordinate to progress value."""
+        margin = 10
+        usable_width = self.width() - 2 * margin
+        if usable_width <= 0:
+            return 0.0
+        progress = (x - margin) / usable_width
+        return max(0.0, min(1.0, progress))
+    
+    def paintEvent(self, event):
+        """Custom paint for the progress bar."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        margin = 10
+        bar_height = 10 if not self._hover else 14
+        y_offset = (self.height() - bar_height) // 2
+        usable_width = self.width() - 2 * margin
+        
+        # Background track
+        track_rect = QRect(margin, y_offset, usable_width, bar_height)
+        painter.setBrush(QBrush(QColor("#2a2a4a")))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(track_rect, bar_height // 2, bar_height // 2)
+        
+        # Progress fill with gradient
+        if self._progress > 0:
+            progress_width = int(usable_width * self._progress)
+            if progress_width > 0:
+                progress_rect = QRect(margin, y_offset, progress_width, bar_height)
+                
+                gradient = QLinearGradient(margin, 0, margin + usable_width, 0)
+                gradient.setColorAt(0, QColor("#00d9ff"))
+                gradient.setColorAt(0.5, QColor("#00e676"))
+                gradient.setColorAt(1, QColor("#00d9ff"))
+                
+                painter.setBrush(QBrush(gradient))
+                painter.drawRoundedRect(progress_rect, bar_height // 2, bar_height // 2)
+        
+        # Draw handle/thumb at current position
+        handle_radius = 8 if not self._hover else 10
+        handle_x = margin + int(usable_width * self._progress)
+        handle_y = self.height() // 2
+        
+        # Handle glow effect when hovering
+        if self._hover or self._is_dragging:
+            glow_color = QColor("#00d9ff")
+            glow_color.setAlpha(80)
+            painter.setBrush(QBrush(glow_color))
+            painter.drawEllipse(handle_x - handle_radius - 4, handle_y - handle_radius - 4,
+                               (handle_radius + 4) * 2, (handle_radius + 4) * 2)
+        
+        # Handle
+        handle_gradient = QLinearGradient(handle_x - handle_radius, handle_y - handle_radius,
+                                          handle_x + handle_radius, handle_y + handle_radius)
+        handle_gradient.setColorAt(0, QColor("#ffffff"))
+        handle_gradient.setColorAt(1, QColor("#00d9ff"))
+        painter.setBrush(QBrush(handle_gradient))
+        painter.setPen(QPen(QColor("#00d9ff"), 2))
+        painter.drawEllipse(handle_x - handle_radius, handle_y - handle_radius,
+                           handle_radius * 2, handle_radius * 2)
+        
+        # Hover preview position indicator
+        if self._hover and not self._is_dragging:
+            preview_x = margin + int(usable_width * self._hover_pos)
+            painter.setPen(QPen(QColor("#ffffff80"), 2))
+            painter.drawLine(preview_x, y_offset - 2, preview_x, y_offset + bar_height + 2)
+    
+    def mousePressEvent(self, event: QMouseEvent):
+        """Handle mouse press for seeking."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._is_dragging = True
+            progress = self._pos_to_progress(int(event.position().x()))
+            self._progress = progress
+            self.update()
+            self.seeked.emit(progress)
+    
+    def mouseMoveEvent(self, event: QMouseEvent):
+        """Handle mouse move for dragging and hover preview."""
+        self._hover_pos = self._pos_to_progress(int(event.position().x()))
+        
+        if self._is_dragging:
+            progress = self._hover_pos
+            self._progress = progress
+            self.seeked.emit(progress)
+        
+        self.update()
+    
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        """Handle mouse release."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._is_dragging = False
+            self.update()
+    
+    def enterEvent(self, event):
+        """Mouse entered widget."""
+        self._hover = True
+        self.update()
+    
+    def leaveEvent(self, event):
+        """Mouse left widget."""
+        self._hover = False
+        self._is_dragging = False
+        self.update()
 
 
 # =============================================================================
@@ -403,38 +528,50 @@ def calculate_orp_index(word: str) -> int:
     Calculate the Optimal Recognition Point (ORP) index for a word.
     This is the character that should be highlighted and centered.
     
-    Rules based on word length (letters only):
-    - 1 letter: index 0
-    - 2-5 letters: index 1 (second letter)
-    - 6-9 letters: index 2 (third letter)  
-    - 10-13 letters: index 3 (fourth letter)
-    - 14+ letters: approximately 1/4 into the word
+    The ORP is typically slightly left of center, around 25-35% into the word.
+    This helps the eye recognize the word faster as we read left-to-right.
+    
+    Based on research and the Spritz algorithm:
+    - 1 letter:  position 0 (1st char)
+    - 2 letters: position 0 (1st char) - NOT the last!
+    - 3 letters: position 1 (2nd char, middle)
+    - 4 letters: position 1 (2nd char, 25%)
+    - 5 letters: position 1 (2nd char, 20%) 
+    - 6 letters: position 2 (3rd char, 33%)
+    - 7 letters: position 2 (3rd char, 29%)
+    - 8 letters: position 2 (3rd char, 25%)
+    - 9 letters: position 3 (4th char, 33%)
+    - 10 letters: position 3 (4th char, 30%)
+    - 11 letters: position 3 (4th char, 27%)
+    - 12 letters: position 3 (4th char, 25%)
+    - 13+ letters: position 4 or ~30%
     """
     # Get the actual letters (excluding punctuation for calculation)
     letters_only = re.sub(r'[^\w]', '', word)
     length = len(letters_only)
     
-    if length <= 1:
-        return 0
+    if length <= 2:
+        return 0  # First letter for 1-2 char words
     elif length <= 5:
-        return 1
-    elif length <= 9:
-        return 2
-    elif length <= 13:
-        return 3
+        return 1  # Second letter for 3-5 char words
+    elif length <= 8:
+        return 2  # Third letter for 6-8 char words
+    elif length <= 12:
+        return 3  # Fourth letter for 9-12 char words
     else:
-        return length // 4
+        # For very long words, use approximately 30% but at least position 4
+        return max(4, int(length * 0.30))
 
 
 def find_orp_in_word(word: str) -> int:
     """
     Find the actual index of ORP in the word string (including punctuation).
+    Maps from letter-based index to actual string index.
     """
     # Get ORP index based on letters only
-    letters_only = re.sub(r'[^\w]', '', word)
     orp_letter_index = calculate_orp_index(word)
     
-    # Map back to actual string index
+    # Map back to actual string index, counting only word characters
     letter_count = 0
     for i, char in enumerate(word):
         if re.match(r'\w', char):
@@ -442,7 +579,12 @@ def find_orp_in_word(word: str) -> int:
                 return i
             letter_count += 1
     
-    return 0  # Fallback
+    # Fallback: return first letter position
+    for i, char in enumerate(word):
+        if re.match(r'\w', char):
+            return i
+    
+    return 0  # Ultimate fallback
 
 
 def get_monospace_font() -> QFont:
@@ -486,13 +628,13 @@ class ORPDisplayWidget(QWidget):
         self.top_guide = QLabel("▼")
         self.top_guide.setObjectName("guideLine")
         self.top_guide.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.top_guide.setStyleSheet("color: #ff4757; font-size: 28px; font-weight: bold;")
+        self.top_guide.setStyleSheet("color: #ff4757; font-size: 32px; font-weight: bold;")
         layout.addWidget(self.top_guide)
         
         # Word display container
         word_container = QWidget()
         word_layout = QHBoxLayout(word_container)
-        word_layout.setContentsMargins(0, 5, 0, 5)
+        word_layout.setContentsMargins(0, 8, 0, 8)
         word_layout.setSpacing(0)
         
         # Left part (before ORP) - right aligned
@@ -517,7 +659,7 @@ class ORPDisplayWidget(QWidget):
         self.bottom_guide = QLabel("▲")
         self.bottom_guide.setObjectName("guideLine")
         self.bottom_guide.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.bottom_guide.setStyleSheet("color: #ff4757; font-size: 28px; font-weight: bold;")
+        self.bottom_guide.setStyleSheet("color: #ff4757; font-size: 32px; font-weight: bold;")
         layout.addWidget(self.bottom_guide)
         
         self.update_font()
@@ -558,6 +700,9 @@ class ORPDisplayWidget(QWidget):
         self.left_label.setText(left_part)
         self.orp_label.setText(orp_char)
         self.right_label.setText(right_part)
+        
+        # Reset ORP color to red
+        self.orp_label.setStyleSheet(f"color: #ff4757; font-size: {self.font_size}pt; font-weight: bold;")
     
     def display_phrase(self, words: List[str]):
         """Display multiple words as a phrase."""
@@ -598,6 +743,9 @@ class ORPDisplayWidget(QWidget):
         self.left_label.setText(left_text)
         self.orp_label.setText(orp_char)
         self.right_label.setText(right_text)
+        
+        # Reset ORP color to red
+        self.orp_label.setStyleSheet(f"color: #ff4757; font-size: {self.font_size}pt; font-weight: bold;")
     
     def display_message(self, message: str):
         """Display a centered message (like 'Done!')."""
@@ -904,19 +1052,23 @@ class QuickReadApp(QMainWindow):
         
         layout.addLayout(wpm_reading_layout)
         
-        # Progress section
+        # Progress section with seekable progress bar
         progress_layout = QHBoxLayout()
+        progress_layout.setSpacing(15)
         
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setMinimum(0)
-        self.progress_bar.setMaximum(100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(False)
+        # Word position label
+        self.position_label = QLabel("0 / 0")
+        self.position_label.setStyleSheet("color: #a0a0a0; font-size: 12px; min-width: 80px;")
+        progress_layout.addWidget(self.position_label)
+        
+        # Seekable progress bar
+        self.progress_bar = SeekableProgressBar()
+        self.progress_bar.seeked.connect(self.on_progress_seeked)
         progress_layout.addWidget(self.progress_bar, 1)
         
-        self.time_label = QLabel("Remaining: --:--")
+        self.time_label = QLabel("⏱ --:--")
         self.time_label.setObjectName("timeLabel")
-        self.time_label.setMinimumWidth(150)
+        self.time_label.setMinimumWidth(80)
         progress_layout.addWidget(self.time_label)
         
         layout.addLayout(progress_layout)
@@ -951,7 +1103,7 @@ class QuickReadApp(QMainWindow):
         layout.addLayout(controls_layout)
         
         # Status label
-        self.status_label = QLabel("Press Space or Play to start reading • ↑↓ adjust speed • ←→ navigate")
+        self.status_label = QLabel("Press Space or Play to start • ↑↓ speed • ←→ navigate • Click progress bar to seek")
         self.status_label.setObjectName("statusLabel")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.status_label)
@@ -1028,7 +1180,7 @@ class QuickReadApp(QMainWindow):
         self.wpm_slider.setValue(new_wpm)
         self.reading_wpm_slider.setValue(new_wpm)
         self.update_wpm_display()
-        self.status_label.setText(f"Speed: {new_wpm} WPM")
+        self.status_label.setText(f"⚡ Speed: {new_wpm} WPM")
     
     def decrease_wpm(self):
         """Decrease WPM by step amount."""
@@ -1037,7 +1189,7 @@ class QuickReadApp(QMainWindow):
         self.wpm_slider.setValue(new_wpm)
         self.reading_wpm_slider.setValue(new_wpm)
         self.update_wpm_display()
-        self.status_label.setText(f"Speed: {new_wpm} WPM")
+        self.status_label.setText(f"🐢 Speed: {new_wpm} WPM")
     
     def update_wpm_display(self):
         """Update WPM display label."""
@@ -1060,6 +1212,30 @@ class QuickReadApp(QMainWindow):
             self.toggle_fullscreen()
         elif self.is_playing:
             self.pause_reading()
+    
+    def on_progress_seeked(self, position: float):
+        """Handle progress bar seek."""
+        if not self.tokens:
+            return
+        
+        # Calculate target index from position (0.0 - 1.0)
+        target_index = int(position * len(self.tokens))
+        target_index = max(0, min(len(self.tokens) - 1, target_index))
+        
+        # Snap to words_per_flash boundary
+        target_index = (target_index // self.words_per_flash) * self.words_per_flash
+        
+        self.current_index = target_index
+        self.update_progress()
+        self.update_time_estimate()
+        
+        # Show the word at this position
+        if self.is_playing:
+            self.timer.stop()
+            self.display_next_word()
+        else:
+            self.show_current_word()
+            self.status_label.setText(f"📍 Jumped to word {self.current_index + 1}")
     
     def update_word_count(self):
         """Update word count label."""
@@ -1191,7 +1367,7 @@ class QuickReadApp(QMainWindow):
         self.is_paused = False
         
         # Update UI
-        self.progress_bar.setValue(0)
+        self.progress_bar.set_progress(0)
         self.orp_display.clear()
         self.reading_wpm_slider.setValue(self.wpm)
         self.update_wpm_display()
@@ -1239,7 +1415,7 @@ class QuickReadApp(QMainWindow):
         self.is_paused = False
         self.current_index = 0
         self.orp_display.clear()
-        self.progress_bar.setValue(0)
+        self.progress_bar.set_progress(0)
         self.update_play_button()
         self.status_label.setText("⏹ Stopped • Press Space to start")
     
@@ -1308,7 +1484,7 @@ class QuickReadApp(QMainWindow):
             self.timer.stop()
             self.is_playing = False
             self.orp_display.display_message("✓ Done!")
-            self.progress_bar.setValue(100)
+            self.progress_bar.set_progress(1.0)
             self.status_label.setText("🎉 Finished! Press Space to restart")
             self.update_play_button()
             return
@@ -1366,13 +1542,14 @@ class QuickReadApp(QMainWindow):
         if not self.tokens:
             return
         
-        progress = (self.current_index / len(self.tokens)) * 100
-        self.progress_bar.setValue(int(progress))
+        progress = self.current_index / len(self.tokens)
+        self.progress_bar.set_progress(progress)
+        self.position_label.setText(f"{self.current_index} / {len(self.tokens)}")
     
     def update_time_estimate(self):
         """Update estimated remaining time."""
         if not self.tokens:
-            self.time_label.setText("Remaining: --:--")
+            self.time_label.setText("⏱ --:--")
             return
         
         remaining_words = len(self.tokens) - self.current_index
@@ -1399,7 +1576,7 @@ class QuickReadApp(QMainWindow):
         if self.is_playing:
             word_num = min(self.current_index, len(self.tokens))
             self.status_label.setText(
-                f"📖 Reading: {word_num:,} / {len(self.tokens):,} words • ↑↓ adjust speed"
+                f"📖 Reading: {word_num:,} / {len(self.tokens):,} words • ↑↓ speed • Click bar to seek"
             )
 
 
